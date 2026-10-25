@@ -199,5 +199,65 @@ class TestIterFiles(unittest.TestCase):
             self.assertEqual([f.name for f in files], ["a.log"])
 
 
+class TestRobustness(unittest.TestCase):
+    """极端场景：任何输入都不能崩溃"""
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_nonexistent_file(self):
+        r = core.detect("/definitely/not/exist/file.txt")
+        self.assertEqual(r["encoding"], "error")
+
+    def test_directory_as_file(self):
+        r = core.detect(self.dir)
+        self.assertEqual(r["encoding"], "error")
+        r2 = core.convert_file(self.dir, to="utf-8")
+        self.assertEqual(r2["status"], "skip")
+        r3 = core.fix_file(self.dir)
+        self.assertEqual(r3["status"], "skip")
+        r4 = core.bom_file(self.dir, "add")
+        self.assertEqual(r4["status"], "skip")
+
+    def test_emoji_to_gbk(self):
+        f = self.dir / "emoji.txt"
+        f.write_bytes("中文🎉🎊".encode("utf-8"))
+        r = core.convert_file(f, to="gbk")
+        self.assertEqual(r["status"], "ok")
+        self.assertIn("已替换", r["note"])
+
+    def test_readonly_file(self):
+        f = self.dir / "ro.txt"
+        f.write_bytes("中文".encode("gbk"))
+        f.chmod(0o444)
+        try:
+            r = core.convert_file(f, to="utf-8")
+            self.assertEqual(r["status"], "skip")
+            self.assertIn("失败", r["note"])
+        finally:
+            f.chmod(0o644)
+
+    def test_empty_and_1byte(self):
+        f1 = self.dir / "empty.txt"
+        f1.write_bytes(b"")
+        core.detect(f1)
+        core.convert_file(f1, to="utf-8")
+        core.fix_file(f1)
+        core.bom_file(f1, "add")
+        f2 = self.dir / "one.bin"
+        f2.write_bytes(b"\xff")
+        core.detect(f2)
+        core.convert_file(f2, to="utf-8")
+
+    def test_megabyte_file(self):
+        f = self.dir / "big.txt"
+        f.write_bytes(("很长的中文内容" * 50000).encode("utf-8"))
+        core.detect(f)
+        core.fix_file(f, backup=False)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,9 @@ __version__ = "0.1.0"
 # ---------- 输出着色 ----------
 def _enable_vt() -> None:
     if os.name == "nt":
-        os.system("")  # 激活 Windows 控制台的 ANSI 转义支持
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")

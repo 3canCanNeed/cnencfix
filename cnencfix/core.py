@@ -102,15 +102,28 @@ def detect_bytes(b: bytes) -> dict:
 
 
 def read_bytes(path: str | Path) -> bytes:
-    with open(path, "rb") as f:
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"不是文件或不存在: {p}")
+    with open(p, "rb") as f:
         return f.read()
 
 
 def detect(path: str | Path, sample: int = 65536) -> dict:
+    """检测文件编码，永不崩溃（返回错误信息而非抛异常）"""
     p = Path(path)
     d = {"file": str(p)}
-    with open(p, "rb") as f:
-        b = f.read(sample)
+    try:
+        if not p.is_file():
+            d.update({"encoding": "error", "note": f"不是文件或不存在"})
+            d["size"] = 0
+            return d
+        with open(p, "rb") as f:
+            b = f.read(sample)
+    except (OSError, PermissionError) as e:
+        d.update({"encoding": "error", "note": f"读取失败: {e.strerror or e}"})
+        d["size"] = 0
+        return d
     d.update(detect_bytes(b))
     d["size"] = p.stat().st_size
     return d
@@ -128,33 +141,48 @@ def _backup(path: Path) -> Path:
 
 def convert_file(path: str | Path, to: str = "utf-8", bom: str = "keep",
                  backup: bool = True, dry: bool = False) -> dict:
-    """转码单文件。bom: keep/add/strip。返回 {status, from, note}"""
+    """转码单文件。永不崩溃（GBK 编码不了的字符自动 errors='replace' 并标注）。"""
     p = Path(path)
     d = detect(p)
     enc = d["encoding"]
-    if enc in ("binary", "binary?", "unknown", "empty", "utf-16"):
-        return {"status": "skip", "from": enc, "note": "不处理非文本/未知编码文件"}
+    if enc in ("binary", "binary?", "unknown", "empty", "utf-16", "error"):
+        return {"status": "skip", "from": enc, "note": d.get("note", "不处理")}
     if enc == "utf-8-sig":
         enc = "utf-8"
     if enc == to and bom == "keep":
         return {"status": "skip", "from": enc, "note": "已是目标编码"}
     if dry:
         return {"status": "dry", "from": enc, "note": f"将转换为 {to}"}
-    raw = read_bytes(p)
+    try:
+        raw = read_bytes(p)
+    except (OSError, PermissionError) as e:
+        return {"status": "skip", "from": enc, "note": f"读取失败: {e.strerror or e}"}
     if raw.startswith(BOM_UTF8):
         raw = raw[len(BOM_UTF8):]
-    text = raw.decode(enc)
+    try:
+        text = raw.decode(enc)
+    except (UnicodeDecodeError, LookupError):
+        return {"status": "skip", "from": enc, "note": "解码失败"}
+    note_extra = ""
+    try:
+        data = text.encode(to)
+    except UnicodeEncodeError:
+        data = text.encode(to, errors="replace")
+        note_extra = "（含目标编码无法表示的字符，已替换为 ?）"
     if backup:
-        _backup(p)
-    data = text.encode(to)
+        try:
+            _backup(p)
+        except (OSError, PermissionError) as e:
+            return {"status": "skip", "from": enc, "note": f"备份失败: {e.strerror or e}"}
     if bom == "add" or (to == "utf-8" and bom == "keep" and d["encoding"] == "utf-8-sig") or \
        (to == "utf-8" and bom == "keep" and d["bom"]):
         if not data.startswith(BOM_UTF8):
             data = BOM_UTF8 + data
-    elif bom == "strip":
-        pass
-    p.write_bytes(data)
-    return {"status": "ok", "from": enc, "note": f"{enc} → {to}"}
+    try:
+        p.write_bytes(data)
+    except (OSError, PermissionError) as e:
+        return {"status": "skip", "from": enc, "note": f"写入失败: {e.strerror or e}"}
+    return {"status": "ok", "from": enc, "note": f"{enc} → {to}{note_extra}"}
 
 
 def fix_text(s: str) -> tuple[str, str, float] | None:
@@ -190,13 +218,16 @@ def fix_text(s: str) -> tuple[str, str, float] | None:
 
 
 def fix_file(path: str | Path, backup: bool = True, dry: bool = False) -> dict:
-    """修复文件中的双重编码乱码（仅在明显改善时写回）"""
+    """修复文件中的双重编码乱码。永不崩溃。"""
     p = Path(path)
     d = detect(p)
     if d["encoding"] not in ("utf-8", "utf-8-sig"):
-        return {"status": "skip", "from": d["encoding"], "note": "仅处理UTF-8乱码文本"}
+        return {"status": "skip", "from": d["encoding"], "note": d.get("note", "仅处理UTF-8乱码文本")}
     had_bom = d["encoding"] == "utf-8-sig"
-    raw = read_bytes(p)
+    try:
+        raw = read_bytes(p)
+    except (OSError, PermissionError) as e:
+        return {"status": "skip", "from": d["encoding"], "note": f"读取失败: {e.strerror or e}"}
     body = raw[len(BOM_UTF8):] if raw.startswith(BOM_UTF8) else raw
     try:
         text = body.decode("utf-8")
@@ -210,35 +241,50 @@ def fix_file(path: str | Path, backup: bool = True, dry: bool = False) -> dict:
     if dry:
         return {"status": "dry", "from": "utf-8", "note": f"预览: {sample}…（反推 {rev}）"}
     if backup:
-        _backup(p)
+        try:
+            _backup(p)
+        except (OSError, PermissionError) as e:
+            return {"status": "skip", "from": "utf-8", "note": f"备份失败: {e.strerror or e}"}
     data = fixed.encode("utf-8")
     if had_bom:
         data = BOM_UTF8 + data
-    p.write_bytes(data)
+    try:
+        p.write_bytes(data)
+    except (OSError, PermissionError) as e:
+        return {"status": "skip", "from": "utf-8", "note": f"写入失败: {e.strerror or e}"}
     return {"status": "ok", "from": "utf-8", "note": f"已修复（反推 {rev}）: {sample}…"}
 
 
 def bom_file(path: str | Path, mode: str, dry: bool = False) -> dict:
-    """mode: add / strip。add 仅对 UTF-8 文本（无 BOM 时加上）；strip 移除 UTF-8 BOM。"""
+    """mode: add / strip。永不崩溃。"""
     p = Path(path)
     d = detect(p)
     if d["encoding"] not in ("utf-8", "utf-8-sig"):
-        return {"status": "skip", "from": d["encoding"], "note": "仅处理UTF-8文件"}
-    raw = read_bytes(p)
+        return {"status": "skip", "from": d["encoding"], "note": d.get("note", "仅处理UTF-8文件")}
+    try:
+        raw = read_bytes(p)
+    except (OSError, PermissionError) as e:
+        return {"status": "skip", "from": d["encoding"], "note": f"读取失败: {e.strerror or e}"}
     has = raw.startswith(BOM_UTF8)
     if mode == "add":
         if has:
             return {"status": "skip", "from": "utf-8-sig", "note": "已有BOM"}
         if dry:
             return {"status": "dry", "from": "utf-8", "note": "将添加BOM"}
-        p.write_bytes(BOM_UTF8 + raw)
+        try:
+            p.write_bytes(BOM_UTF8 + raw)
+        except (OSError, PermissionError) as e:
+            return {"status": "skip", "from": "utf-8", "note": f"写入失败: {e.strerror or e}"}
         return {"status": "ok", "from": "utf-8", "note": "已添加BOM（PowerShell 5.1 需要）"}
     if mode == "strip":
         if not has:
             return {"status": "skip", "from": "utf-8", "note": "本来就没有BOM"}
         if dry:
             return {"status": "dry", "from": "utf-8-sig", "note": "将移除BOM"}
-        p.write_bytes(raw[len(BOM_UTF8):])
+        try:
+            p.write_bytes(raw[len(BOM_UTF8):])
+        except (OSError, PermissionError) as e:
+            return {"status": "skip", "from": "utf-8-sig", "note": f"写入失败: {e.strerror or e}"}
         return {"status": "ok", "from": "utf-8-sig", "note": "已移除BOM"}
     return {"status": "skip", "from": d["encoding"], "note": "未知模式"}
 
