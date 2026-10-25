@@ -259,5 +259,38 @@ class TestRobustness(unittest.TestCase):
         core.fix_file(f, backup=False)
 
 
+class TestBackupAndScanSafety(unittest.TestCase):
+    """备份策略与扫描安全"""
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_backup_overwrites_not_spam(self):
+        f = self.dir / "x.txt"
+        for i in range(10):
+            f.write_bytes(f"内容{i}".encode("gbk"))
+            core.convert_file(f, to="utf-8", backup=True)
+            core.convert_file(f, to="gbk", backup=True)
+        baks = list(self.dir.glob("x.txt.bak*"))
+        self.assertEqual(len(baks), 1, f"应只有1个.bak，实际{len(baks)}个")
+
+    def test_scan_excludes_bak(self):
+        f = self.dir / "data.txt"
+        f.write_bytes("中文".encode("gbk"))
+        core.convert_file(f, to="utf-8", backup=True)
+        files = core.iter_files([self.dir], recursive=True)
+        names = [p.name for p in files]
+        self.assertIn("data.txt", names)
+        self.assertNotIn("data.txt.bak", names, ".bak 不应被扫描到")
+
+    def test_short_text_not_falsely_fixed(self):
+        for s in ["一", "二", "人", "中", "a", "ab", "一二", "人中"]:
+            r = core.fix_text(s)
+            self.assertIsNone(r, f"短文本 {s!r} 不应被修复")
+
+
 if __name__ == "__main__":
     unittest.main()

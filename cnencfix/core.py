@@ -130,11 +130,8 @@ def detect(path: str | Path, sample: int = 65536) -> dict:
 
 
 def _backup(path: Path) -> Path:
+    """备份文件：始终用 .bak（覆盖旧备份，避免无限堆积）"""
     bak = path.with_name(path.name + ".bak")
-    i = 1
-    while bak.exists():
-        i += 1
-        bak = path.with_name(f"{path.name}.bak{i}")
     bak.write_bytes(path.read_bytes())
     return bak
 
@@ -188,14 +185,13 @@ def convert_file(path: str | Path, to: str = "utf-8", bom: str = "keep",
 def fix_text(s: str) -> tuple[str, str, float] | None:
     """尝试修复双重编码乱码：返回 (修复后文本, 反推编码, 置信增益) 或 None。
 
-    GBK 误读场景（如 MATLAB 输出）：乱码文本本身已全是 CJK 字符（cjk≈0.95），
-    逆推后中文占比不变但字符完全不同。判据改为：逆推可严格 round-trip 且产
-    物不同于原文（GBK 误读的 CJK 字符恰好构成合法 UTF-8 字节对，正常中文
-    几乎不可能反向碰巧成立）。latin-1 风格（Java 日志）：乱码含大量 Âåæ 签
-    名字符，逆推后中文占比大幅上升，用 gain>0.05 判据。
+    安全约束：文本长度 ≥ 4 个非空字符才尝试修复（避免"一"/"中"等短字符串
+    因字节碰巧合法 UTF-8 而被误修复）。
     """
+    chars = [c for c in s if not c.isspace()]
+    if len(chars) < 4:
+        return None  # 太短，误报风险极高
     base = cjk_ratio(s)
-    base_moji = mojibake_score.__wrapped__(s) if hasattr(mojibake_score, "__wrapped__") else 0.0
     best = None
     for rev in ("gbk", "latin-1", "cp1252"):
         try:
@@ -290,20 +286,23 @@ def bom_file(path: str | Path, mode: str, dry: bool = False) -> dict:
 
 
 def iter_files(paths, recursive=False, includes=None, only_text_ext=False):
-    """展开路径为文件列表（目录需 recursive 或单文件）"""
+    """展开路径为文件列表。自动排除 .bak 备份文件（防止转换备份再被转换）。"""
     includes = includes or []
     exts = {i.lower().lstrip("*.") for i in includes}
     out = []
     for path in paths:
         p = Path(path)
         if p.is_file():
-            out.append(p)
+            if not p.name.endswith(".bak"):
+                out.append(p)
         elif p.is_dir():
             if not recursive:
                 continue
             for root, dirs, names in os.walk(p):
                 dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
                 for n in names:
+                    if n.endswith(".bak"):
+                        continue
                     f = Path(root) / n
                     if exts and f.suffix.lower().lstrip(".") not in exts:
                         continue
