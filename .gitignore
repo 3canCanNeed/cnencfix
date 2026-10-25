@@ -1,0 +1,3 @@
+dogfood/
+__pycache__/
+*.egg-info/

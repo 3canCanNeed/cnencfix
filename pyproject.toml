@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cnencfix"
+version = "0.1.0"
+description = "中文 Windows 开发环境编码急救包：GBK↔UTF-8 批量转换、双重编码乱码修复、BOM 处理（零依赖）"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "3canCanNeed" }]
+keywords = ["encoding", "gbk", "utf-8", "chinese", "mojibake", "乱码"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Natural Language :: Chinese (Simplified)",
+    "Programming Language :: Python :: 3",
+    "Topic :: Utilities",
+]
+
+[project.scripts]
+cnencfix = "cnencfix.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["cnencfix*"]
