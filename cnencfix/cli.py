@@ -112,7 +112,7 @@ def cmd_bom(args) -> int:
         return 1
     ok = skip = 0
     for f in files:
-        r = core.bom_file(f, mode, dry=args.dry_run)
+        r = core.bom_file(f, mode, dry=args.dry_run, backup=args.backup)
         tag = {"ok": c.ok + "OK  " + c.end, "skip": c.dim + "跳过" + c.end, "dry": c.info + "预览" + c.end}[r["status"]]
         print(f"{tag} {r['note']:28} {f}")
         ok += r["status"] == "ok"
@@ -170,6 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--add", action="store_true", help="添加 BOM")
     g.add_argument("--strip", action="store_true", help="移除 BOM")
     g.add_argument("--auto-ps1", action="store_true", help="给目录下所有 .ps1 补 BOM（加）")
+    p_bom.add_argument("--no-backup", action="store_true", help="不生成 .bak 备份")
     p_bom.add_argument("--dry-run", action="store_true", help="只预览不写入")
     p_bom.set_defaults(fn=cmd_bom)
     return ap

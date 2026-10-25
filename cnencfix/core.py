@@ -41,17 +41,40 @@ def cjk_ratio(s: str) -> float:
 
 
 def mojibake_score(s: str) -> float:
-    """检测文本是否为乱码：latin1 风格签名字符密度 + 逆推验证。"""
+    """检测文本是否为乱码。三层判据：
+    1. U+0080-BF 低区字符密度 >= 0.25（latin-1 乱码强特征；自然语言≈0%）
+    2. 连续 >=3 个签名 mojibake 字符的密度 >= 0.10
+    3. GBK 逆推验证（GBK 误读产生的 CJK 区乱码）
+    """
     chars = [c for c in s if not c.isspace()]
     if not chars:
         return 0.0
-    latin1_hits = sum(1 for c in chars if c in _MOJIBAKE_CHARS) / len(chars)
-    if latin1_hits >= 0.15:
-        return latin1_hits
+    low_special = sum(1 for c in chars if 0x80 <= ord(c) <= 0xBF)
+    low_ratio = low_special / len(chars)
+    if low_ratio >= 0.25:
+        return low_ratio
+    consecutive = 0
+    total_consecutive = 0
+    low_in_runs = 0
+    for c in chars:
+        if c in _MOJIBAKE_CHARS:
+            consecutive += 1
+            if 0x80 <= ord(c) <= 0xBF:
+                low_in_runs += 1
+        else:
+            if consecutive >= 3:
+                total_consecutive += consecutive
+            consecutive = 0
+    if consecutive >= 3:
+        total_consecutive += consecutive
+    consecutive_ratio = total_consecutive / len(chars)
+    # 连续 run 中含低区字符（Â¸­）才认定为 latin-1 乱码；纯高位重音（àèìòù）不是
+    if consecutive_ratio >= 0.10 and low_in_runs >= 2:
+        return consecutive_ratio
     r = fix_text(s)
     if r is not None:
-        return 1.0  # 逆推成功 → 确认是乱码
-    return latin1_hits
+        return 1.0
+    return 0.0
 
 
 def detect_bytes(b: bytes) -> dict:
@@ -246,8 +269,8 @@ def fix_file(path, backup: bool = True, dry: bool = False) -> dict:
         return {"status": "ok", "from": "utf-8", "note": f"已修复（反推 {rev}）: {sample}…"}
 
 
-def bom_file(path, mode: str, dry: bool = False) -> dict:
-    """mode: add / strip。永不崩溃。"""
+def bom_file(path, mode: str, dry: bool = False, backup: bool = True) -> dict:
+    """mode: add / strip。永不崩溃。backup: 写入前是否生成 .bak。"""
     p = Path(path)
     d = detect(p)
     if d["encoding"] not in ("utf-8", "utf-8-sig"):
@@ -263,6 +286,11 @@ def bom_file(path, mode: str, dry: bool = False) -> dict:
                 return {"status": "skip", "from": "utf-8-sig", "note": "已有BOM"}
             if dry:
                 return {"status": "dry", "from": "utf-8", "note": "将添加BOM"}
+            if backup:
+                try:
+                    _backup(p)
+                except (OSError, PermissionError) as e:
+                    return {"status": "skip", "from": "utf-8", "note": f"备份失败: {e.strerror or e}"}
             try:
                 p.write_bytes(BOM_UTF8 + raw)
             except (OSError, PermissionError) as e:
@@ -273,6 +301,11 @@ def bom_file(path, mode: str, dry: bool = False) -> dict:
                 return {"status": "skip", "from": "utf-8", "note": "本来就没有BOM"}
             if dry:
                 return {"status": "dry", "from": "utf-8-sig", "note": "将移除BOM"}
+            if backup:
+                try:
+                    _backup(p)
+                except (OSError, PermissionError) as e:
+                    return {"status": "skip", "from": "utf-8-sig", "note": f"备份失败: {e.strerror or e}"}
             try:
                 p.write_bytes(raw[len(BOM_UTF8):])
             except (OSError, PermissionError) as e:
